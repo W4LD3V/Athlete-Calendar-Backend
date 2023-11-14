@@ -14,14 +14,17 @@ CREATE TABLE public.events (
 	CONSTRAINT events_organizer_id_fkey FOREIGN KEY (organizer_id) REFERENCES public.organizers(id)
 );
 
-
 CREATE TABLE public.organizers (
 	id uuid NOT NULL DEFAULT uuid_generate_v4(),
 	"name" varchar(100) NOT NULL,
 	contact_info varchar(255) NOT NULL,
 	picture text NULL,
+	description text NULL;
+	user_id uuid NULL,
 	CONSTRAINT organizers_pkey PRIMARY KEY (id)
+	CONSTRAINT organizers_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
 );
+
 CREATE TABLE public.users (
 	id uuid NOT NULL DEFAULT uuid_generate_v4(),
 	name varchar(100) NOT NULL,
@@ -29,6 +32,7 @@ CREATE TABLE public.users (
 	email varchar(100) NOT NULL,
 	"password" varchar(255) NOT NULL,
 	picture text NULL,
+	is_organizer BOOLEAN NOT NULL DEFAULT false;
 	CONSTRAINT users_email_key UNIQUE (email),
 	CONSTRAINT users_pkey PRIMARY KEY (id)
 );
@@ -88,4 +92,12 @@ CREATE TABLE public.friend_requests (
     CONSTRAINT friend_requests_receiver_id_fkey FOREIGN KEY (receiver_id) REFERENCES public.users(id),
     CONSTRAINT friend_requests_sender_id_fkey FOREIGN KEY (sender_id) REFERENCES public.users(id),
     CONSTRAINT friend_requests_unique UNIQUE (sender_id, receiver_id) -- Ensure that each pair of users only has one active friend request at a time
+);
+
+CREATE TABLE public.user_roles (
+    id uuid NOT NULL DEFAULT uuid_generate_v4(),
+    user_id uuid NOT NULL,
+    role varchar(50) NOT NULL,
+    CONSTRAINT user_roles_pkey PRIMARY KEY (id),
+    CONSTRAINT user_roles_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
 );

@@ -33,13 +33,16 @@ app.post("/login", async (req, res) => {
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
+        // Check if the user has an organization
+        const hasOrganization = await db.one('SELECT EXISTS(SELECT 1 FROM public.organizers WHERE user_id = $1)', [user.id]);
+
         // User is valid, generate a JWT token
         const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
             expiresIn: '1h' // Token expiration time
         });
 
-        // Send token back to the client
-        res.json({ token });
+        // Send token and organization status back to the client
+        res.json({ token, is_organizer: user.is_organizer, hasOrganization: hasOrganization.exists });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Server error" });
@@ -47,7 +50,16 @@ app.post("/login", async (req, res) => {
 });
 
 app.post("/signup", async (req, res) => {
-    const { email, password, name, surname } = req.body;
+    const { email, password, name, surname, type } = req.body;
+    let is_organizer = false;
+
+    if (!name || !surname || !email || !password) {
+        return res.status(400).json({ message: "Name, surname, email, password are required" });
+      }
+    
+    if (type.toLowerCase() === "organizer"){
+        is_organizer = true;
+    }
 
     try {
         // Check if the email is already registered
@@ -63,7 +75,7 @@ app.post("/signup", async (req, res) => {
         // Start a database transaction
         await db.tx(async t => {
             // Store the new user's details in the database with the hashed password
-            const user = await t.one('INSERT INTO public.users (name, surname, email, password) VALUES ($1, $2, $3, $4) RETURNING id', [name, surname, email, hashedPassword]);
+            const user = await t.one('INSERT INTO public.users (name, surname, email, password, is_organizer) VALUES ($1, $2, $3, $4, $5) RETURNING id', [name, surname, email, hashedPassword, is_organizer]);
             
             // Create a default settings record for the new user
             await t.none('INSERT INTO public.user_settings (user_id, privacy) VALUES ($1, $2)', [user.id, 'PUBLIC']);
@@ -73,6 +85,34 @@ app.post("/signup", async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Server error" });
+    }
+});
+
+app.delete("/remove-user", authenticateJWT, async (req, res) => {
+    try {
+        const userId = req.userId;
+
+        // Check if the user exists
+        const existingUser = await db.oneOrNone('SELECT * FROM public.users WHERE id = $1', userId);
+        if (!existingUser) {
+            return res.status(404).json({ message: "User not found!" });
+        }
+
+        // Delete or update records in dependent tables
+        await db.none('DELETE FROM public.user_friends WHERE user_id = $1 OR friend_id = $1', userId);
+        await db.none('DELETE FROM public.messages WHERE sender_id = $1 OR receiver_id = $1', userId);
+        await db.none('DELETE FROM public.user_going_events WHERE user_id = $1', userId);
+        await db.none('DELETE FROM public.user_saved_events WHERE user_id = $1', userId);
+        await db.none('DELETE FROM public.user_settings WHERE user_id = $1', userId);
+        await db.none('DELETE FROM public.friend_requests WHERE sender_id = $1 OR receiver_id = $1', userId);
+
+        // Finally, delete the user
+        await db.none('DELETE FROM public.users WHERE id = $1', userId);
+
+        res.status(200).json({ message: "User deleted successfully" });
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
     }
 });
 
@@ -372,13 +412,37 @@ app.get('/retrieve-messages', authenticateJWT, async (req, res) => {
     const { friendId } = req.query; // The other user
 
     try {
-        const messages = await db.any('SELECT * FROM public.messages WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1) ORDER BY timestamp ASC', [userId, friendId]);
+        const query = `
+            SELECT 
+                m.id, 
+                m.sender_id, 
+                m.receiver_id, 
+                m.message, 
+                m.timestamp, 
+                sender.name AS sender_name, 
+                sender.surname AS sender_surname, 
+                receiver.name AS receiver_name, 
+                receiver.surname AS receiver_surname
+            FROM 
+                public.messages m
+            INNER JOIN 
+                public.users sender ON m.sender_id = sender.id
+            INNER JOIN 
+                public.users receiver ON m.receiver_id = receiver.id
+            WHERE 
+                (m.sender_id = $1 AND m.receiver_id = $2) OR 
+                (m.sender_id = $2 AND m.receiver_id = $1) 
+            ORDER BY 
+                m.timestamp ASC`;
+
+        const messages = await db.any(query, [userId, friendId]);
         res.json(messages);
     } catch (error) {
         console.error("Database query error:", error);
         res.status(500).json({ error: 'Database query error' });
     }
 });
+
 
 app.get('/friend-requests', authenticateJWT, async (req, res) => {
     const userId = req.userId; // Receiver's ID
@@ -464,14 +528,160 @@ app.post('/update-user-settings', authenticateJWT, async (req, res) => {
     }
 });
 
-app.post('/update-user-settings', authenticateJWT, async (req, res) => {
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const multer = require('multer');
+const stream = require('stream');
+
+// AWS S3 client configuration
+const s3Client = new S3Client({
+    region: process.env.AWS_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    }
+  });  
+
+// Multer upload storage configuration
+const storage = multer.memoryStorage();
+
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Not an image! Please upload only images.'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 1024 * 1024 * 5 // 5 MB
+  }
+});
+
+app.post("/uploadProfilePicture", authenticateJWT, upload.single('picture'), async (req, res) => {
+    if (!req.file) {
+      return res.status(400).send('No file uploaded.');
+    }
+  
+    // Ensure that this variable is correctly being set to the current user's ID
+    const userId = req.userId; 
+
+    const file = req.file;
+    const key = `${Date.now().toString()}.${file.originalname.split('.').pop()}`;
+  
+    const uploadParams = {
+      Bucket: 'athlete-calendar',
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype
+    };
+  
+    try {
+      const command = new PutObjectCommand(uploadParams);
+      await s3Client.send(command);
+      const picturePath = `https://${uploadParams.Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+  
+    console.log('Attempting to update user picture with path:', picturePath);
+    console.log('User ID:', userId);
+      // Perform the database update logic
+      await db.none('UPDATE public.users SET picture = $1 WHERE id = $2', [picturePath, userId])
+        .then(() => {
+          console.log('Database updated successfully for user:', userId);
+          res.json({ message: "Profile picture updated successfully", path: picturePath });
+        })
+        .catch(error => {
+            console.error('Error updating database:', error);
+            res.status(500).json({ error: 'Error updating database', details: error.message });
+        });          
+    } catch (error) {
+      console.error("Error uploading to S3:", error);
+      res.status(500).json({ error: 'Error occurred during upload to S3' });
+    }
+  });
+  
+  app.post("/create-organizer", authenticateJWT, async (req, res) => {
+    const { name, description, contact_info, picture } = req.body;
     const userId = req.userId;
-    const { notifications, privacy } = req.body;
+
+    if (!name || !description || !contact_info ) {
+        return res.status(400).json({ message: "Name, description, contact information are required." });
+    }
 
     try {
-        await db.none('UPDATE public.user_settings SET notifications = $1, privacy = $2 WHERE user_id = $3', [notifications, privacy, userId]);
+        // Check if the user is allowed to create an organizer
+        const user = await db.oneOrNone('SELECT is_organizer FROM public.users WHERE id = $1', [userId]);
+        if (!user || !user.is_organizer) {
+            return res.status(403).json({ message: "User is not authorized to create an organizer." });
+        }
 
-        res.status(200).json({ message: "Settings updated successfully" });
+        // Check if organizer already exists
+        const existingOrganizer = await db.oneOrNone('SELECT * FROM public.organizers WHERE name = $1', [name]);
+        if (existingOrganizer) {
+            return res.status(409).json({ message: "This title for an organizer is already registered within the system." });
+        }
+
+        // Insert new organizer
+        await db.none('INSERT INTO public.organizers (name, description, contact_info, user_id, picture ) VALUES ($1, $2, $3, $4, $5)', [name, description, contact_info, userId, picture]);
+        res.status(201).json({ message: "Organizer registered successfully." });
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
+    }
+});
+
+app.get('/organization-events', authenticateJWT, async (req, res) => {
+    try {
+        const userId = req.userId;
+
+        const events = await db.any(`
+            SELECT events.* 
+            FROM events
+            JOIN organizers ON events.organizer_id = organizers.id
+            WHERE organizers.user_id = $1
+        `, [userId]);
+
+        res.json(events);
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
+    }
+});
+
+app.post("/organization-events", authenticateJWT, async (req, res) => {
+    let { title, date_start, date_end, location, activityType, description, gpx, visibility_date, picture } = req.body;
+    const userId = req.userId;
+
+    if (!title || !date_start || !date_end || !location || !activityType || !description ) {
+        return res.status(400).json({ message: "Title, start date, end date, location, activity type and description are required." });
+    } 
+
+    // Set default values for gpx and picture if not provided
+    gpx = gpx || null;
+    picture = picture || null;
+
+    // Set visibility_date to current Unix timestamp if not provided
+    if (!visibility_date) {
+        visibility_date = Math.floor(Date.now() / 1000); // Convert current date to Unix timestamp
+    }
+
+    try {
+        // Check if the user is allowed to create an event
+        const user = await db.oneOrNone('SELECT is_organizer FROM public.users WHERE id = $1', [userId]);
+        if (!user || !user.is_organizer) {
+            return res.status(403).json({ message: "User is not authorized to create an event." });
+        }
+
+        // Check if event already exists
+        const existingEvent = await db.oneOrNone('SELECT * FROM public.events WHERE title = $1', [title]);
+        if (existingEvent) {
+            return res.status(409).json({ message: "This title for an event is already registered within the system." });
+        }
+
+        // Insert new organizer
+        await db.none('INSERT INTO public.events (title, date_start, date_end, location, activityType, description, gpx, visibility_date, picture) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [title, date_start, date_end, location, activityType, description, gpx, visibility_date, picture]);
+        res.status(201).json({ message: "Event created successfully." });
     } catch (error) {
         console.error("Database query error:", error);
         res.status(500).json({ error: 'Database query error' });
@@ -479,6 +689,8 @@ app.post('/update-user-settings', authenticateJWT, async (req, res) => {
 });
 
 
+
+
 app.listen(port, () => {
-    console.log(`Listening on port ${port}`);
+  console.log(`Listening on port ${port}`);
 });
