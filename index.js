@@ -153,6 +153,18 @@ app.get('/events/:eventId', authenticateJWT, async (req, res) => {
     }
 });
 
+app.get('/organizer', authenticateJWT, async (req, res) => {
+    try {
+        const userId = req.userId
+        const organizer = await db.one('SELECT * FROM organizers WHERE user_id = $1', [userId]);
+        res.json(organizer);
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
+    }
+});
+
+
 app.get('/organizer/:id', authenticateJWT, async (req, res) => {
     try {
         const organizerId = req.params.id;
@@ -634,14 +646,19 @@ app.post("/uploadProfilePicture", authenticateJWT, upload.single('picture'), asy
 app.get('/organization-events', authenticateJWT, async (req, res) => {
     try {
         const userId = req.userId;
-
-        const events = await db.any(`
-            SELECT events.* 
+        console.log("userId:", userId);
+    
+        const queryString = `
+            SELECT events.*, organizers.contact_info 
             FROM events
             JOIN organizers ON events.organizer_id = organizers.id
-            WHERE organizers.user_id = $1
-        `, [userId]);
-
+            WHERE organizers.user_id = $1        
+        `;
+        console.log("Query String:", queryString);
+    
+        const events = await db.any(queryString, [userId]);
+        console.log("Events:", events);
+    
         res.json(events);
     } catch (error) {
         console.error("Database query error:", error);
@@ -653,9 +670,9 @@ app.post("/organization-events", authenticateJWT, async (req, res) => {
     let { title, date_start, date_end, location, activityType, description, gpx, visibility_date, picture } = req.body;
     const userId = req.userId;
 
-    if (!title || !date_start || !date_end || !location || !activityType || !description ) {
-        return res.status(400).json({ message: "Title, start date, end date, location, activity type and description are required." });
-    } 
+    if (!title || !date_start || !date_end || !location || !activityType || !description) {
+        return res.status(400).json({ message: "Title, start date, end date, location, activity type, and description are required." });
+    }
 
     // Set default values for gpx and picture if not provided
     gpx = gpx || null;
@@ -679,8 +696,13 @@ app.post("/organization-events", authenticateJWT, async (req, res) => {
             return res.status(409).json({ message: "This title for an event is already registered within the system." });
         }
 
-        // Insert new organizer
-        await db.none('INSERT INTO public.events (title, date_start, date_end, location, activityType, description, gpx, visibility_date, picture) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [title, date_start, date_end, location, activityType, description, gpx, visibility_date, picture]);
+        // Get the organizer_id based on the user_id
+        const organizer = await db.one('SELECT id FROM public.organizers WHERE user_id = $1', [userId]);
+
+        // Insert new event with the correct organizer_id
+        await db.none('INSERT INTO public.events (title, date_start, date_end, location, organizer_id, activityType, description, gpx, visibility_date, picture) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+            [title, date_start, date_end, location, organizer.id, activityType, description, gpx, visibility_date, picture]);
+
         res.status(201).json({ message: "Event created successfully." });
     } catch (error) {
         console.error("Database query error:", error);
@@ -689,6 +711,75 @@ app.post("/organization-events", authenticateJWT, async (req, res) => {
 });
 
 
+app.delete("/organization-events/:eventId", authenticateJWT, async (req, res) => {
+    try {
+        // Extract user ID from the authenticated request
+        const userId = req.userId;
+
+        // Extract event ID from the URL parameters
+        const eventId = req.params.eventId;
+
+        // Check if the event is saved for this user
+        const existingEvent = await db.oneOrNone('SELECT * FROM public.events WHERE id = $1', [eventId]);
+
+        // If the event isn't saved for this user, return an error
+        if (!existingEvent) {
+            return res.status(404).json({ message: "Event not found for this user" });
+        }
+
+        // Delete the event for the user
+        await db.none('DELETE FROM public.events WHERE id = $1', [eventId]);
+
+        res.status(200).json({ message: "Event unsaved successfully" });
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
+    }
+});
+
+app.delete("/remove-organization", authenticateJWT, async (req, res) => {
+    try {
+        const userId = req.userId;
+
+        // Find the organization associated with the user
+        const organization = await db.oneOrNone('SELECT * FROM public.organizers WHERE user_id = $1', userId);
+        if (!organization) {
+            return res.status(404).json({ message: "Organization not found for the user!" });
+        }
+        const organizationId = organization.id;
+
+        // Delete events organized by this organization
+        await db.none('DELETE FROM public.events WHERE organizer_id = $1', organizationId);
+
+        // Handle other dependencies here if needed
+
+        // Finally, delete the organization
+        await db.none('DELETE FROM public.organizers WHERE id = $1', organizationId);
+
+        res.status(200).json({ message: "Organization deleted successfully" });
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
+    }
+});
+
+
+
+app.get('/friend-information/:friendId', authenticateJWT, async (req, res) => {
+    const { friendId } = req.params; // Using route parameter
+
+    try {
+        const user_information = await db.oneOrNone('SELECT name FROM users WHERE id = $1', [friendId]);
+        if (user_information) {
+            res.json(user_information);
+        } else {
+            res.status(404).json({ error: 'User not found' });
+        }
+    } catch (error) {
+        console.error("Database query error:", error);
+        res.status(500).json({ error: 'Database query error' });
+    }
+});
 
 
 app.listen(port, () => {
