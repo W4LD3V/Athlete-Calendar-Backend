@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require("express");
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const cors = require("cors");
 const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
