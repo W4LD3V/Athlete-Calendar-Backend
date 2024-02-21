@@ -22,6 +22,9 @@ const db = pgp({
 
 const authenticateJWT = require('./middleware/jwt-authenticate');
 
+app.use(cors());
+app.use(express.json());
+
 app.post("/login", async (req, res) => {
     const { email, password } = req.body;
 
