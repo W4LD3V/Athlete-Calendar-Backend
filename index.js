@@ -57,7 +57,7 @@ app.post("/signup", async (req, res) => {
         return res.status(400).json({ message: "Name, surname, email, password are required" });
       }
     
-    if (type.toLowerCase() === "organizer"){
+      if (type && type.toLowerCase() === "organizer"){
         is_organizer = true;
     }
 
