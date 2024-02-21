@@ -3,7 +3,7 @@ const express = require("express");
 const app = express();
 const port = 3000;
 const cors = require("cors");
-const bcrypt = require("bcrypt");
+const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
 const pgp = require("pg-promise")();
 
