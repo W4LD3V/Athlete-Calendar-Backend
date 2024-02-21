@@ -10,12 +10,13 @@ const pgp = require("pg-promise")();
 const authenticateJWT = require('./middleware/jwt-authenticate')
 
 // Connect to your PostgreSQL database
-const db = pgp({
+const db = pgp(process.env.DATABASE_URL || {
     host: process.env.DB_HOST,
     port: process.env.DB_PORT,
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD
+    password: process.env.DB_PASSWORD,
+    ssl: { rejectUnauthorized: false } // This might be needed for Heroku's PostgreSQL
 });
 
 app.use(cors());
