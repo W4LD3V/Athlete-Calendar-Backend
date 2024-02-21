@@ -7,20 +7,20 @@ const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
 const pgp = require("pg-promise")();
 
-const authenticateJWT = require('./middleware/jwt-authenticate')
+// SSL configuration for Heroku PostgreSQL
+const sslConfig = process.env.NODE_ENV === 'production' ? {
+    ssl: {
+        rejectUnauthorized: false
+    }
+} : {};
 
-// Connect to your PostgreSQL database
-const db = pgp(process.env.DATABASE_URL || {
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    ssl: { rejectUnauthorized: false } // This might be needed for Heroku's PostgreSQL
+// Connect to PostgreSQL database
+const db = pgp({
+    connectionString: process.env.DATABASE_URL,
+    ...sslConfig
 });
 
-app.use(cors());
-app.use(express.json());
+const authenticateJWT = require('./middleware/jwt-authenticate');
 
 app.post("/login", async (req, res) => {
     const { email, password } = req.body;
