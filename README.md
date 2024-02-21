@@ -46,7 +46,7 @@ To run the Workout Logger, follow these steps:
 4. Run `npm install` to install the needed dependencies.
 5. Set up the PostgreSQL database by running the provided commands in the config.sql file.
 6. Set up the .env variables depending on your PostgreSQL server.
-7. Execute the command `npm start ` to start the Flask development server.
+7. Execute the command `npm start ` to start the Node.js development server.
 8. Access the application by navigating to http://localhost:3000 in your web browser.
 
 #### Additional Information:
