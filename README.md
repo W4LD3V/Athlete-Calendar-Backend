@@ -1,4 +1,4 @@
-# Workout Logger - Track and Analyze Your Workouts
+# Athlete Calendar - Platform for sports events enthusiasts and organizers
 
 #### Video Demo: https://youtu.be/FVPnNtJor8E
 
